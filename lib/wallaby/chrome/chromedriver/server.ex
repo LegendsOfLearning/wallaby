@@ -9,6 +9,7 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
     @moduledoc false
     defstruct [
       :port_number,
+      :chromedriver_url,
       :chromedriver_path,
       :wrapper_script_port,
       :wrapper_script_os_pid,
@@ -22,6 +23,7 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
 
     @type t :: %__MODULE__{
             port_number: port_number | nil,
+            chromedriver_url: String.t() | nil,
             chromedriver_path: String.t(),
             wrapper_script_port: port | nil,
             wrapper_script_os_pid: os_pid | nil,
@@ -57,9 +59,7 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
 
   @spec get_base_url(server) :: String.t()
   def get_base_url(server) do
-    server
-    |> GenServer.call(:get_port_number)
-    |> build_base_url()
+    GenServer.call(server, :get_base_url)
   end
 
   @spec get_wrapper_script_os_pid(server) :: os_pid
@@ -85,7 +85,14 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
     startup_timeout = Keyword.get(opts, :startup_timeout, @default_startup_timeout)
     Process.send_after(self(), :ensure_readiness, startup_timeout)
 
-    {:ok, %State{chromedriver_path: chromedriver_path}, {:continue, :start_chromedriver}}
+    chromedriver_url = Keyword.get(opts, :chromedriver_url, nil)
+
+    if !is_nil(chromedriver_url) do
+      check_readiness_async(chromedriver_url)
+      {:ok, %State{chromedriver_path: chromedriver_path, chromedriver_url: chromedriver_url}}
+    else
+      {:ok, %State{chromedriver_path: chromedriver_path}, {:continue, :start_chromedriver}}
+    end
   end
 
   @impl true
@@ -93,6 +100,7 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
     %State{chromedriver_path: chromedriver_path} = state
 
     port_number = Utils.find_available_port()
+    base_url = build_base_url(port_number)
     wrapper_script_port = open_chromedriver_port(chromedriver_path, port_number)
 
     wrapper_script_os_pid =
@@ -100,12 +108,13 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
       |> Port.info()
       |> Keyword.fetch!(:os_pid)
 
-    check_readiness_async(port_number)
+    check_readiness_async(base_url)
 
     {:noreply,
      %State{
        state
        | port_number: port_number,
+         chromedriver_url: base_url,
          wrapper_script_port: wrapper_script_port,
          wrapper_script_os_pid: wrapper_script_os_pid
      }}
@@ -145,6 +154,10 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
   @impl true
   def handle_call(:get_port_number, _from, %State{port_number: port_number} = state) do
     {:reply, port_number, state}
+  end
+
+  def handle_call(:get_base_url, _from, %State{chromedriver_url: base_url} = state) do
+    {:reply, base_url, state}
   end
 
   def handle_call(:get_wrapper_script_os_pid, _, %State{wrapper_script_os_pid: os_pid} = state) do
@@ -205,9 +218,8 @@ defmodule Wallaby.Chrome.Chromedriver.Server do
       args: args(chromedriver, tcp_port)
     ]
 
-  defp check_readiness_async(port_number) do
+  defp check_readiness_async(base_url) do
     process_to_notify = self()
-    base_url = build_base_url(port_number)
 
     Task.start_link(fn ->
       ReadinessChecker.wait_until_ready(base_url)

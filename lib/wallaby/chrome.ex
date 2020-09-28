@@ -65,6 +65,21 @@ defmodule Wallaby.Chrome do
     ]
   ```
 
+  ### Setting chromedriver_url
+
+  If you wish to use a running chromedriver, can specify the base url of a running Chromedriver. In
+  such a case, the Chromedriver and Chrome binary path will be ignored, and no startup script will
+  be initiated. Readiness will still be checked. This is useful if you are running this in a
+  CI/CD environment and you are using the host operating system to manage the chromedriver service.
+
+  ```
+  config :wallaby,
+  chromedriver: [
+    chromedriver_url: "http://localhost:5000"
+  ]
+  ```
+
+
   ## Default Capabilities
 
   By default, Chromdriver will use the following capabilities
@@ -143,9 +158,11 @@ defmodule Wallaby.Chrome do
 
   @doc false
   def init(:ok) do
+    chromedriver_opts = Application.get_env(:wallaby, :chromedriver, [])
+
     children = [
       Wallaby.Driver.LogStore,
-      Wallaby.Chrome.Chromedriver
+      Wallaby.Chrome.Chromedriver.child_spec(chromedriver_opts)
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
@@ -154,14 +171,23 @@ defmodule Wallaby.Chrome do
   @doc false
   @spec validate() :: :ok | {:error, DependencyError.t()}
   def validate do
-    with {:ok, executable} <- find_chromedriver_executable() do
-      {version, 0} = System.cmd(executable, ["--version"])
+    case chromedriver_url_from_config() do
+      {:ok, nil} ->
+        with {:ok, executable} <- find_chromedriver_executable() do
+          {version, 0} = System.cmd(executable, ["--version"])
 
-      @chromedriver_version_regex
-      |> Regex.run(version)
-      |> Enum.drop(1)
-      |> Enum.map(&String.to_integer/1)
-      |> version_check()
+          @chromedriver_version_regex
+          |> Regex.run(version)
+          |> Enum.drop(1)
+          |> Enum.map(&String.to_integer/1)
+          |> version_check()
+        end
+
+      {:ok, _url} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -185,6 +211,30 @@ defmodule Wallaby.Chrome do
           Wallaby can't find chromedriver. Make sure you have chromedriver installed
           and included in your path.
           You can also provide a path using `config :wallaby, chromedriver: <path>`.
+          """)
+
+        {:error, exception}
+    end
+  end
+
+  @doc false
+  @spec chromedriver_url_from_config ::
+          {:ok, nil} | {:ok, String.t()} | {:error, DependencyError.t()}
+  def chromedriver_url_from_config do
+    :wallaby
+    |> Application.get_env(:chromedriver, [])
+    |> Keyword.get(:chromedriver_url, nil)
+    |> case do
+      nil ->
+        {:ok, nil}
+
+      url when is_binary(url) ->
+        {:ok, url}
+
+      _ ->
+        exception =
+          DependencyError.exception("""
+          When configuring Wallaby, chromedriver_url must be a String or left nil.
           """)
 
         {:error, exception}

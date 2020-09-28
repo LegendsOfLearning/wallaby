@@ -6,9 +6,18 @@ defmodule Wallaby.Chrome.Chromedriver do
 
   @instance __MODULE__
 
-  def child_spec(_arg) do
-    {:ok, chromedriver_path} = Chrome.find_chromedriver_executable()
-    Server.child_spec([chromedriver_path, [name: @instance]])
+  def child_spec(args \\ []) do
+    chromedriver_path =
+      case Chrome.chromedriver_url_from_config() do
+        {:ok, nil} ->
+          {:ok, chromedriver_path} = Chrome.find_chromedriver_executable()
+          chromedriver_path
+
+        {:ok, _url} ->
+          ""
+      end
+
+    Server.child_spec([chromedriver_path, Keyword.merge([name: @instance], args)])
   end
 
   @spec wait_until_ready(timeout()) :: :ok | {:error, :timeout}
